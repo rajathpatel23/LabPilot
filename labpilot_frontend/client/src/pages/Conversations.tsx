@@ -201,10 +201,17 @@ export default function Conversations() {
     () => conversations.find((c) => c.id === selectedId) ?? null,
     [conversations, selectedId]
   );
-  const lastAssistantMsg = useMemo(
-    () => [...messages].reverse().find((m) => m.role === "assistant" && m.metadata),
-    [messages]
-  );
+  // Show metadata from the most recent assistant message that actually carries
+  // recommendation, literature, or evidence data — not just any assistant message.
+  // This prevents follow-up smalltalk/status responses from wiping the panel.
+  const lastRichMsg = useMemo(() => {
+    return [...messages].reverse().find((m) => {
+      if (m.role !== "assistant" || !m.metadata) return false;
+      const md = m.metadata as AnyObj;
+      return md.recommendation || md.evidence || md.literature_explain;
+    });
+  }, [messages]);
+  const lastAssistantMsg = lastRichMsg ?? [...messages].reverse().find((m) => m.role === "assistant" && m.metadata) ?? null;
   const meta = (lastAssistantMsg?.metadata ?? {}) as AnyObj;
   const recommendation = (meta.recommendation as AnyObj | undefined) ?? {};
   const reasoning = (meta.reasoning as AnyObj | undefined) ?? {};
@@ -362,11 +369,19 @@ export default function Conversations() {
             <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center">
               <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
             </div>
-            <div>
-                <div className="text-sm font-semibold text-foreground" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold text-foreground truncate" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
                 {selectedConv?.title ?? "No conversation selected"}
               </div>
               <div className="text-xs text-muted-foreground">{messages.length} messages</div>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <code className="text-[10px] text-muted-foreground px-2 py-0.5 rounded bg-muted" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                data: {DEFAULT_DATASET.split("/").pop()}
+              </code>
+              <code className="text-[10px] text-muted-foreground px-2 py-0.5 rounded bg-muted" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                model: {DEFAULT_MODEL.split("/").pop()}
+              </code>
             </div>
           </div>
 
@@ -410,7 +425,20 @@ export default function Conversations() {
                       )}
                       style={{ fontFamily: "'Inter', sans-serif" }}
                     >
-                      {msg.content}
+                      {msg.role === "assistant"
+                        ? msg.content.split("\n").map((line, li) => {
+                            const bold = line.match(/^\*\*(.+?)\*\*\s*(.*)$/);
+                            if (bold) {
+                              return (
+                                <div key={li} className={li > 0 ? "mt-1.5" : ""}>
+                                  <span className="font-semibold text-foreground">{formatChemString(bold[1])}</span>{" "}
+                                  <span>{formatChemString(bold[2])}</span>
+                                </div>
+                              );
+                            }
+                            return line ? <div key={li} className={li > 0 ? "mt-1" : ""}>{formatChemString(line)}</div> : null;
+                          })
+                        : msg.content}
                     </div>
                     <div className="flex items-center gap-2 mt-1 px-1">
                       <span className="text-xs text-muted-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>

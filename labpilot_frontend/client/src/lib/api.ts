@@ -84,3 +84,16 @@ export type ApiSession = {
   created_at: string;
   updated_at: string;
 };
+
+export type ApiDataset = {
+  id: string;
+  name: string;
+  original_filename: string;
+  stored_path: string;
+  size_bytes: number;
+  num_rows?: number | null;
+  num_cols?: number | null;
+  columns?: string[];
+  target_candidates?: string[];
+  created_at: string;
+};

@@ -17,6 +17,11 @@ import pandas as pd  # type: ignore[import-not-found]
 from modeling.io_utils import load_table
 
 from .db import dumps_json, exec_sql, fetch_all, fetch_one
+from .recommender import (
+    recommend_with_reasoning as _fast_recommend,
+    format_assistant_text as _format_assistant,
+    invalidate_model_cache,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +40,96 @@ def run_cmd(cmd: List[str]) -> subprocess.CompletedProcess:
         capture_output=True,
         check=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Dataset registry
+# ---------------------------------------------------------------------------
+
+YIELD_KEYWORDS = ["yield", "product_yield", "pct", "conversion", "ee", "selectivity"]
+
+
+def _infer_target_candidates(columns: List[str]) -> List[str]:
+    """Heuristic: pick columns likely to be a yield/target column."""
+    candidates = []
+    for col in columns:
+        cl = col.lower().replace(" ", "_")
+        if any(kw in cl for kw in YIELD_KEYWORDS):
+            candidates.append(col)
+    return candidates or columns[:3]  # fallback: first 3 columns
+
+
+def register_dataset(
+    original_filename: str,
+    stored_path: str,
+    size_bytes: int,
+) -> Dict[str, Any]:
+    """Register an uploaded dataset in the DB with column metadata."""
+    did = str(uuid.uuid4())
+    ts = now_iso()
+    name = Path(original_filename).stem
+
+    # Extract column metadata
+    try:
+        df = load_table(stored_path)
+        num_rows = len(df)
+        num_cols = len(df.columns)
+        columns = list(df.columns)
+        target_candidates = _infer_target_candidates(columns)
+    except Exception:
+        num_rows = None
+        num_cols = None
+        columns = []
+        target_candidates = []
+
+    exec_sql(
+        """
+        INSERT INTO datasets(id, name, original_filename, stored_path, size_bytes,
+                             num_rows, num_cols, columns_json, target_candidates_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            did, name, original_filename, stored_path, size_bytes,
+            num_rows, num_cols,
+            dumps_json(columns), dumps_json(target_candidates),
+            ts,
+        ),
+    )
+    return _parse_dataset_row(fetch_one("SELECT * FROM datasets WHERE id = ?", (did,)))
+
+
+def _parse_dataset_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    parsed = dict(row)
+    parsed["columns"] = json.loads(parsed.pop("columns_json") or "[]")
+    parsed["target_candidates"] = json.loads(parsed.pop("target_candidates_json") or "[]")
+    return parsed
+
+
+def list_datasets() -> List[Dict[str, Any]]:
+    rows = fetch_all("SELECT * FROM datasets ORDER BY created_at DESC")
+    return [_parse_dataset_row(r) for r in rows]
+
+
+def get_dataset(dataset_id: str) -> Optional[Dict[str, Any]]:
+    row = fetch_one("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
+    return _parse_dataset_row(row)
+
+
+def get_dataset_models(dataset_id: str) -> List[Dict[str, Any]]:
+    """Return training runs whose dataset_path matches this dataset's stored_path."""
+    ds = get_dataset(dataset_id)
+    if not ds:
+        return []
+    rows = fetch_all(
+        "SELECT * FROM training_runs WHERE dataset_path = ? AND status = 'completed' ORDER BY created_at DESC",
+        (ds["stored_path"],),
+    )
+    for row in rows:
+        row["features"] = json.loads(row.pop("features_json") or "[]")
+        row["metrics"] = json.loads(row.pop("metrics_json") or "{}")
+    return rows
 
 
 def create_conversation(title: str) -> Dict[str, Any]:
@@ -393,6 +488,21 @@ def run_agent_turn(
 
     auto_threshold = float(os.getenv("TAVILY_AUTO_UNCERTAINTY_THRESHOLD", "10.0"))
     tavily_mode = "disabled"
+
+    # Build exclusion set from conversation history (previously recommended row_indices)
+    exclude_indices: set = set()
+    try:
+        prior = list_messages(conversation_id)
+        for m in prior:
+            mm = m.get("metadata") or {}
+            rec_meta = mm.get("recommendation") or {}
+            for cand in rec_meta.get("ranked_candidates", []) or rec_meta.get("top_candidates", []) or []:
+                ri = cand.get("row_index")
+                if ri is not None:
+                    exclude_indices.add(int(ri))
+    except Exception:
+        pass
+
     payload: Dict[str, Any]
     if use_tavily:
         payload = run_recommendation_with_evidence(
@@ -405,6 +515,7 @@ def run_agent_turn(
             search_depth="advanced",
             include_answer="basic",
             focus_journals=["JACS", "Chemical Science"],
+            exclude_indices=exclude_indices,
         )
         tavily_mode = "explicit"
     else:
@@ -413,6 +524,7 @@ def run_agent_turn(
             model_path=model_path,
             top_k=top_k,
             use_llm=use_llm,
+            exclude_indices=exclude_indices,
         )
         rec = payload.get("recommendation", {}) or {}
         uncertainty = rec.get("predicted_uncertainty")
@@ -434,20 +546,9 @@ def run_agent_turn(
     recommendation = payload.get("recommendation", {}) or {}
     reasoning = payload.get("reasoning", {}) or {}
     evidence = payload.get("evidence", {}) or {}
-    next_experiment = recommendation.get("next_experiment", {}) or {}
-    predicted = recommendation.get("predicted_yield")
-    uncertainty = recommendation.get("predicted_uncertainty")
-    follow_up = reasoning.get("decision_rule_after_result") or (
-        "If observed yield >= predicted range, exploit around this condition; otherwise run one nearby alternative for contrast."
-    )
-    assistant_text = (
-        "Starter recommendation: run "
-        f"{_short_experiment_text(next_experiment)}. "
-        f"Predicted yield: {predicted if predicted is not None else 'unknown'}"
-        f"{f' (±{round(float(uncertainty), 2)})' if uncertainty is not None else ''}. "
-        f"Why now: {reasoning.get('why_now', 'Balances payoff and information gain.')} "
-        f"Follow-up plan: {follow_up}"
-    ).strip()
+
+    # Build clean, structured assistant text
+    assistant_text = _format_assistant(recommendation, reasoning, evidence if evidence else None)
 
     agent_trace = [
         {"step": 1, "tool": "intent_classifier", "status": "success"},
@@ -491,48 +592,21 @@ def run_recommendation_with_reasoning(
     model_path: str,
     top_k: int = 5,
     use_llm: bool = False,
+    exclude_indices: Optional[set] = None,
 ) -> Dict[str, Any]:
-    rec_path = PROJECT_ROOT / "artifacts" / f"recommendation_api_{uuid.uuid4().hex[:8]}.json"
-    reason_path = PROJECT_ROOT / "artifacts" / f"recommendation_reasoning_api_{uuid.uuid4().hex[:8]}.json"
-
-    rec_cmd = [
-        PYTHON_BIN,
-        "recommend_next.py",
-        "--data",
-        data_path,
-        "--model",
-        model_path,
-        "--top-k",
-        str(top_k),
-    ]
-    rec_proc = run_cmd(rec_cmd)
-    rec_path.write_text(rec_proc.stdout, encoding="utf-8")
-
-    reason_cmd = [
-        PYTHON_BIN,
-        "reason_recommendation.py",
-        "--recommendation-json",
-        str(rec_path),
-        "--out-json",
-        str(reason_path),
-    ]
-    if use_llm:
-        reason_cmd.append("--use-llm")
-    run_cmd(reason_cmd)
-
-    with rec_path.open("r", encoding="utf-8") as f:
-        recommendation = json.load(f)
-    with reason_path.open("r", encoding="utf-8") as f:
-        reasoning_payload = json.load(f)
-
+    """Fast in-process recommendation + reasoning (no subprocess)."""
+    result = _fast_recommend(
+        data_path=data_path,
+        model_path=model_path,
+        top_k=top_k,
+        use_llm=use_llm,
+        exclude_indices=exclude_indices,
+    )
     return {
-        "recommendation": _normalize_recommendation_payload(recommendation),
-        "reasoning": _normalize_reasoning_payload(reasoning_payload.get("reasoning", {})),
-        "llm_error": reasoning_payload.get("llm_error"),
-        "artifacts": {
-            "recommendation_path": str(rec_path),
-            "reasoning_path": str(reason_path),
-        },
+        "recommendation": _normalize_recommendation_payload(result.get("recommendation", {})),
+        "reasoning": _normalize_reasoning_payload(result.get("reasoning", {})),
+        "llm_error": result.get("llm_error"),
+        "artifacts": {},
     }
 
 
@@ -645,12 +719,14 @@ def run_recommendation_with_evidence(
     search_depth: str = "advanced",
     include_answer: str = "basic",
     focus_journals: Optional[List[str]] = None,
+    exclude_indices: Optional[set] = None,
 ) -> Dict[str, Any]:
     rec = run_recommendation_with_reasoning(
         data_path=data_path,
         model_path=model_path,
         top_k=top_k,
         use_llm=use_llm,
+        exclude_indices=exclude_indices,
     )
     recommendation_payload = rec.get("recommendation", {})
     query = evidence_query or _build_literature_query_from_recommendation(recommendation_payload)

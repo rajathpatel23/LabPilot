@@ -33,16 +33,20 @@ from .service import (
     create_experiment_run,
     create_training_run,
     get_conversation,
+    get_dataset,
+    get_dataset_models,
     get_experiment_run,
     get_session_state,
     get_training_run,
     list_conversations,
+    list_datasets,
     list_experiment_runs,
     list_messages,
     list_sessions,
     list_training_runs,
     get_evaluation_snapshot,
     get_latest_comparison_suite,
+    register_dataset,
     run_recommendation_with_evidence,
     run_recommendation_with_reasoning,
     explain_literature_relevance,
@@ -94,30 +98,39 @@ async def api_upload_dataset(file: UploadFile = File(...)) -> dict:
     content = await file.read()
     out_path.write_bytes(content)
 
+    # Register in dataset registry with column metadata
+    ds = register_dataset(
+        original_filename=file.filename,
+        stored_path=str(out_path),
+        size_bytes=len(content),
+    )
     return {
         "filename": file.filename,
         "stored_path": str(out_path),
         "size_bytes": len(content),
+        "dataset": ds,
     }
 
 
 @app.get("/api/datasets")
-def api_list_uploaded_datasets() -> list[dict]:
-    upload_dir = Path(__file__).resolve().parent.parent / "data" / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    rows = []
-    for p in sorted(upload_dir.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
-        if not p.is_file():
-            continue
-        rows.append(
-            {
-                "filename": p.name,
-                "path": str(p),
-                "size_bytes": p.stat().st_size,
-                "updated_at": p.stat().st_mtime,
-            }
-        )
-    return rows
+def api_list_datasets() -> list[dict]:
+    return list_datasets()
+
+
+@app.get("/api/datasets/{dataset_id}")
+def api_get_dataset(dataset_id: str) -> dict:
+    ds = get_dataset(dataset_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    return ds
+
+
+@app.get("/api/datasets/{dataset_id}/models")
+def api_get_dataset_models(dataset_id: str) -> list[dict]:
+    ds = get_dataset(dataset_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    return get_dataset_models(dataset_id)
 
 
 @app.post("/api/conversations", response_model=ApiConversation)

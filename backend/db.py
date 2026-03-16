@@ -102,6 +102,22 @@ def ensure_db() -> None:
             conn.execute("ALTER TABLE sessions ADD COLUMN conversation_id TEXT")
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS datasets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                stored_path TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                num_rows INTEGER,
+                num_cols INTEGER,
+                columns_json TEXT,
+                target_candidates_json TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS session_results (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
