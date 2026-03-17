@@ -90,6 +90,16 @@ class SessionSubmitResultRequest(BaseModel):
     recommendation_override: Optional[Dict[str, Any]] = None
 
 
+class OptimizeStepRequest(BaseModel):
+    """Submit last experiment result + get next recommendation in one call."""
+    session_id: str
+    observed_yield: float
+    conditions: Dict[str, Any] = Field(default_factory=dict)
+    notes: str = ""
+    top_k: int = 5
+    use_tavily: bool = False
+
+
 class ComparisonSuiteRequest(BaseModel):
     dataset_path: str
     model_path: Optional[str] = None

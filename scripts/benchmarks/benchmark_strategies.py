@@ -3,10 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SIMULATE_SCRIPT = REPO_ROOT / "scripts" / "training" / "simulate_optimization.py"
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Allow in-distribution benchmarking. Disabled by default because it can be leaky. "
-            "Use benchmark_generalization.py for claim-quality evaluation."
+            "Use scripts/benchmarks/benchmark_generalization.py for claim-quality evaluation."
         ),
     )
     return parser.parse_args()
@@ -87,8 +91,8 @@ def run_simulation(
     out_path: Path,
 ) -> Dict:
     cmd = [
-        "python",
-        "simulate_optimization.py",
+        sys.executable,
+        str(SIMULATE_SCRIPT),
         "--data",
         args.data,
         "--model",
@@ -146,7 +150,7 @@ def main() -> None:
     if not args.allow_non_holdout:
         raise ValueError(
             "Non-holdout benchmark is disabled by default to avoid leaky claims. "
-            "Use benchmark_generalization.py, or pass --allow-non-holdout for diagnostics only."
+            "Use scripts/benchmarks/benchmark_generalization.py, or pass --allow-non-holdout for diagnostics only."
         )
     strategies = [s.strip() for s in args.strategies.split(",") if s.strip()]
     reference_strategies = [
@@ -262,4 +266,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

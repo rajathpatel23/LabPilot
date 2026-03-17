@@ -1,5 +1,8 @@
 # LabPilot Modeling Quickstart
 
+This guide assumes commands are run from repo root using the reorganized `scripts/`
+tree (`training/`, `analysis/`, `benchmarks/`, `workflows/`, `demos/`).
+
 ## 1) Install dependencies
 
 ```bash
@@ -11,7 +14,7 @@ pip install -e . --no-build-isolation
 ## 2) Train surrogate model
 
 ```bash
-python train_surrogate.py \
+python scripts/training/train_surrogate.py \
   --data data/reactions.csv \
   --target yield \
   --out-model artifacts/surrogate.joblib \
@@ -26,7 +29,7 @@ You can also pass an Excel benchmark file directly, for example:
 Adaptive:
 
 ```bash
-python simulate_optimization.py \
+python scripts/training/simulate_optimization.py \
   --data data/reactions.csv \
   --model artifacts/surrogate.joblib \
   --strategy adaptive \
@@ -37,7 +40,7 @@ python simulate_optimization.py \
 Random baseline:
 
 ```bash
-python simulate_optimization.py \
+python scripts/training/simulate_optimization.py \
   --data data/reactions.csv \
   --model artifacts/surrogate.joblib \
   --strategy random \
@@ -48,7 +51,7 @@ python simulate_optimization.py \
 Explicit online bandit (reward-driven):
 
 ```bash
-python simulate_optimization.py \
+python scripts/training/simulate_optimization.py \
   --data data/reactions.csv \
   --model artifacts/surrogate.joblib \
   --strategy bandit_ucb \
@@ -61,7 +64,7 @@ python simulate_optimization.py \
 Contextual bandit (LinUCB, reward generalizes across similar conditions):
 
 ```bash
-python simulate_optimization.py \
+python scripts/training/simulate_optimization.py \
   --data data/reactions.csv \
   --model artifacts/surrogate.joblib \
   --strategy contextual_linucb \
@@ -75,7 +78,7 @@ python simulate_optimization.py \
 ## 4) Recommend next experiment
 
 ```bash
-python recommend_next.py \
+python scripts/workflows/recommend_next.py \
   --data data/reactions.csv \
   --model artifacts/surrogate.joblib \
   --top-k 5
@@ -86,7 +89,7 @@ Optional history file: CSV with `index` column to exclude already tried rows.
 ## 5) Compare trajectory improvement (adaptive vs random)
 
 ```bash
-python compare_trajectories.py \
+python scripts/analysis/compare_trajectories.py \
   --random artifacts/sim_random.json \
   --adaptive artifacts/sim_adaptive.json \
   --out-csv artifacts/trajectory_comparison.csv
@@ -100,7 +103,7 @@ This prints:
 ## 6) Explore a new dataset quickly (EDA)
 
 ```bash
-python explore_data.py \
+python scripts/analysis/explore_data.py \
   --data data/reactions.csv \
   --target yield \
   --out-json artifacts/eda_summary.json
@@ -111,7 +114,7 @@ For Excel benchmark files (Suzuki/Buchwald), pass the `.xlsx` path directly.
 ## 7) Label-ranking style baseline (Doyle dataset)
 
 ```bash
-python label_ranking_baseline.py \
+python scripts/benchmarks/label_ranking_baseline.py \
   --data data/doyle_data/Doyle_raw_data.csv \
   --substrate-cols aryl_halide,aryl_halide_smiles \
   --condition-cols base,ligand,additive \
@@ -124,7 +127,7 @@ This reports top-k condition ranking metrics against a random ranking baseline.
 Multi-seed substrate-holdout benchmark:
 
 ```bash
-python benchmark_label_ranking.py \
+python scripts/benchmarks/benchmark_label_ranking.py \
   --data data/doyle_data/Doyle_raw_data.csv \
   --substrate-cols aryl_halide,aryl_halide_smiles \
   --condition-cols base,ligand,additive \
@@ -139,7 +142,7 @@ This gives mean/std for top-k and MRR vs random across multiple random substrate
 Descriptor-enhanced condition-ranking benchmark (Doyle):
 
 ```bash
-python benchmark_doyle_condition_ranking.py \
+python scripts/benchmarks/benchmark_doyle_condition_ranking.py \
   --raw-data data/doyle_data/Doyle_raw_data.csv \
   --aryl-dft data/doyle_data/aryl_halide_DFT.csv \
   --additive-dft data/doyle_data/additive_DFT.csv \
@@ -157,7 +160,7 @@ Note: this is now **diagnostic only**. Do not use for headline claims.
 For claim-quality evaluation, run Section 9 (group-holdout) instead.
 
 ```bash
-python benchmark_strategies.py \
+python scripts/benchmarks/benchmark_strategies.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --model artifacts/surrogate_suzuki.joblib \
   --budget 20 \
@@ -173,7 +176,7 @@ This reports mean/std, threshold metrics, and confidence intervals vs both rando
 ## 9) Group-holdout generalization benchmark (anti-overfitting check)
 
 ```bash
-python benchmark_generalization.py \
+python scripts/benchmarks/benchmark_generalization.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --target Product_Yield_PCT_Area_UV \
   --group-col Reactant_1_Short_Hand \
@@ -190,7 +193,7 @@ This retrains the surrogate on train-groups only and evaluates strategies on uns
 ## 10) Plot benchmark results (to inspect yield behavior)
 
 ```bash
-python plot_benchmark_results.py \
+python scripts/benchmarks/plot_benchmark_results.py \
   --benchmark-json artifacts/benchmark_generalization_suzuki_3x3.json \
   --out-dir artifacts/plots \
   --title-prefix "Suzuki Holdout"
@@ -206,7 +209,7 @@ This generates:
 First, save recommendation output:
 
 ```bash
-python recommend_next.py \
+python scripts/workflows/recommend_next.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --model artifacts/surrogate_suzuki.joblib \
   --top-k 5 > artifacts/recommendation_top5.json
@@ -215,7 +218,7 @@ python recommend_next.py \
 Then generate explanation payload:
 
 ```bash
-python reason_recommendation.py \
+python scripts/workflows/reason_recommendation.py \
   --recommendation-json artifacts/recommendation_top5.json \
   --out-json artifacts/recommendation_reasoning.json
 ```
@@ -226,7 +229,7 @@ Optional (if Nebius key is configured):
 NEBIUS_API_KEY=... \
 NEBIUS_API_BASE=https://api.studio.nebius.com/v1 \
 NEBIUS_MODEL=meta-llama/Meta-Llama-3.1-70B-Instruct \
-python reason_recommendation.py \
+python scripts/workflows/reason_recommendation.py \
   --recommendation-json artifacts/recommendation_top5.json \
   --out-json artifacts/recommendation_reasoning_llm.json \
   --use-llm
@@ -235,7 +238,7 @@ python reason_recommendation.py \
 ## 12) Agentic end-to-end showcase (optimizer + guardrails + reasoning)
 
 ```bash
-python agentic_showcase.py \
+python scripts/demos/agentic_showcase.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --model artifacts/surrogate_suzuki.joblib \
   --top-k 5 \
@@ -257,12 +260,12 @@ python scripts/check_integrations.py
 Build direct LLM input payload from model recommendation:
 
 ```bash
-python recommend_next.py \
+python scripts/workflows/recommend_next.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --model artifacts/surrogate_suzuki.joblib \
   --top-k 5 > artifacts/recommendation_top5.json
 
-python build_llm_input.py \
+python scripts/workflows/build_llm_input.py \
   --recommendation-json artifacts/recommendation_top5.json \
   --out-json artifacts/llm_input.json
 ```

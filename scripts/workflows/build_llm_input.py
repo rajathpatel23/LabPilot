@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--recommendation-json",
         required=True,
-        help="Path to JSON output from recommend_next.py.",
+        help="Path to JSON output from scripts/workflows/recommend_next.py.",
     )
     parser.add_argument(
         "--out-json",
@@ -83,4 +83,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

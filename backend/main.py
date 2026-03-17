@@ -25,6 +25,7 @@ from .schemas import (
     SessionCreate,
     SessionNextRequest,
     SessionSubmitResultRequest,
+    OptimizeStepRequest,
     TrainingRunCreate,
 )
 from .service import (
@@ -340,6 +341,35 @@ def api_get_experiment_run(run_id: str) -> dict:
     if not run:
         raise HTTPException(status_code=404, detail="Experiment run not found.")
     return run
+
+
+@app.post("/api/optimize/step")
+def api_optimize_step(body: OptimizeStepRequest) -> dict:
+    """Submit last experiment outcome + get next ranked recommendations in one call."""
+    from .service import optimize_step
+    try:
+        return optimize_step(
+            session_id=body.session_id,
+            observed_yield=body.observed_yield,
+            conditions=body.conditions,
+            notes=body.notes,
+            top_k=body.top_k,
+            use_tavily=body.use_tavily,
+        )
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(status_code=code, detail=msg) from e
+
+
+@app.get("/api/optimize/session/{session_id}")
+def api_optimize_session_state(session_id: str) -> dict:
+    """Full optimization state: session info, history, feature columns, next recommendations."""
+    from .service import get_optimize_state
+    state = get_optimize_state(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return state
 
 
 @app.get("/api/evaluation/snapshot")

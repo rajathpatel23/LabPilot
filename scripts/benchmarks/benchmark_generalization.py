@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -11,6 +12,9 @@ import numpy as np
 
 from modeling.io_utils import load_table
 from modeling.surrogate import build_surrogate_pipeline
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SIMULATE_SCRIPT = REPO_ROOT / "scripts" / "training" / "simulate_optimization.py"
 
 
 def resolve_strategy(strategy: str, args: argparse.Namespace) -> tuple[str, list[str]]:
@@ -91,8 +95,8 @@ def run_simulation(
     out_path: Path,
 ) -> Dict:
     cmd = [
-        "python",
-        "simulate_optimization.py",
+        sys.executable,
+        str(SIMULATE_SCRIPT),
         "--data",
         str(data_path),
         "--model",
@@ -289,4 +293,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -230,12 +230,12 @@ cd /Users/rajatpatel/research/nebius_ai_hack/LabPilot
 source .venv/bin/activate
 
 # EDA
-python explore_data.py \
+python scripts/analysis/explore_data.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --out-json artifacts/eda_suzuki.json
 
 # Train
-python train_surrogate.py \
+python scripts/training/train_surrogate.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --target Product_Yield_PCT_Area_UV \
   --features Reactant_1_Short_Hand,Reactant_1_eq,Reactant_1_mmol,Reactant_2_Name,Reactant_2_eq,Catalyst_1_Short_Hand,Catalyst_1_eq,Ligand_Short_Hand,Ligand_eq,Reagent_1_Short_Hand,Reagent_1_eq,Solvent_1_Short_Hand \
@@ -243,27 +243,27 @@ python train_surrogate.py \
   --out-meta artifacts/surrogate_suzuki_meta.json
 
 # Recommend
-python recommend_next.py \
+python scripts/workflows/recommend_next.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --model artifacts/surrogate_suzuki.joblib \
   --top-k 5
 
 # Simulate and compare
-python simulate_optimization.py \
+python scripts/training/simulate_optimization.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --model artifacts/surrogate_suzuki.joblib \
   --strategy random \
   --budget 20 \
   --out artifacts/sim_suzuki_random.json
 
-python simulate_optimization.py \
+python scripts/training/simulate_optimization.py \
   --data data/Suzuki-Miyaura/aap9112_Data_File_S1.xlsx \
   --model artifacts/surrogate_suzuki.joblib \
   --strategy adaptive \
   --budget 20 \
   --out artifacts/sim_suzuki_adaptive.json
 
-python compare_trajectories.py \
+python scripts/analysis/compare_trajectories.py \
   --random artifacts/sim_suzuki_random.json \
   --adaptive artifacts/sim_suzuki_adaptive.json \
   --out-csv artifacts/suzuki_trajectory_comparison.csv

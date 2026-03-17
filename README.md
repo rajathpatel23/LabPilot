@@ -26,7 +26,8 @@ LabPilot is built as a decision-support loop, not a generic chatbot:
 ## What is in this repo
 
 - `backend/` - FastAPI service, SQLite persistence, orchestration logic
-- `modeling/` + `*.py` scripts - training, recommendation, benchmarking, plotting
+- `modeling/` - shared modeling components and utilities
+- `scripts/` - organized CLI entrypoints (`training/`, `workflows/`, `analysis/`, `benchmarks/`, `demos/`)
 - `labpilot_frontend/` - React/Vite frontend (embedded in this repo)
 - `docs/` - PRD, build guide, modeling quickstart, progress notes
 - `prompts/` - LLM prompt templates for reasoning outputs
@@ -143,4 +144,3 @@ LabPilot emphasizes **fair, defensible claims**:
 - [Bandit policy approach](docs/bandit_policy_approach.md)
 - [Dataset notes](docs/dataset.md)
 - [Progress so far](docs/progress_so_far.md)
-

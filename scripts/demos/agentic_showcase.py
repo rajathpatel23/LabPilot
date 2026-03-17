@@ -4,11 +4,16 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RECOMMEND_SCRIPT = REPO_ROOT / "scripts" / "workflows" / "recommend_next.py"
+REASON_SCRIPT = REPO_ROOT / "scripts" / "workflows" / "reason_recommendation.py"
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-llm",
         action="store_true",
-        help="Use LLM explanation path in reason_recommendation.py (requires env key).",
+        help="Use LLM explanation path in scripts/workflows/reason_recommendation.py (requires env key).",
     )
     parser.add_argument(
         "--use-tavily",
@@ -104,8 +109,8 @@ def main() -> None:
 
     # Tool 1: Optimization / ranking tool.
     rec_cmd = [
-        "python",
-        "recommend_next.py",
+        sys.executable,
+        str(RECOMMEND_SCRIPT),
         "--data",
         args.data,
         "--model",
@@ -159,8 +164,8 @@ def main() -> None:
         json.dump(recommendation, f, indent=2)
 
     reason_cmd = [
-        "python",
-        "reason_recommendation.py",
+        sys.executable,
+        str(REASON_SCRIPT),
         "--recommendation-json",
         str(tmp_rec),
         "--out-json",
@@ -204,4 +209,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

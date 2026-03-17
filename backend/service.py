@@ -21,11 +21,15 @@ from .recommender import (
     recommend_with_reasoning as _fast_recommend,
     format_assistant_text as _format_assistant,
     invalidate_model_cache,
+    llm_general_response,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_ROOT = PROJECT_ROOT / "scripts"
 PYTHON_BIN = "python"
+TRAIN_SURROGATE_SCRIPT = SCRIPTS_ROOT / "training" / "train_surrogate.py"
+SIMULATE_OPT_SCRIPT = SCRIPTS_ROOT / "training" / "simulate_optimization.py"
 
 
 def now_iso() -> str:
@@ -397,45 +401,99 @@ def run_agent_turn(
         metadata={"type": "user_prompt", "intent": intent, "intent_classifier": intent_info},
     )
 
-    if intent == "smalltalk":
-        return add_message(
-            conversation_id,
-            "assistant",
-            (
-                "Hi! I can recommend the next best experiment, explain why, and show supporting literature. "
-                "Try: 'Recommend a simple starter experiment and one follow-up based on expected outcome.'"
-            ),
-            metadata={"intent": intent, "route": "smalltalk", "intent_classifier": intent_info},
-        )
-
-    if intent == "status":
+    # Load conversation history for context-aware responses
+    conversation_history = None
+    prior = []
+    try:
         prior = list_messages(conversation_id)
-        assistant_count = sum(1 for m in prior if m.get("role") == "assistant")
-        user_count = sum(1 for m in prior if m.get("role") == "user")
-        last_assistant = next((m for m in reversed(prior) if m.get("role") == "assistant"), None)
-        snippet = (last_assistant or {}).get("content", "")
-        return add_message(
-            conversation_id,
-            "assistant",
-            (
-                f"Thread status: {user_count} user messages, {assistant_count} assistant messages. "
-                f"Latest assistant update: {snippet[:220]}"
-            ),
-            metadata={"intent": intent, "route": "status", "intent_classifier": intent_info},
-        )
+        conversation_history = [
+            {"role": m.get("role", ""), "content": str(m.get("content", ""))}
+            for m in prior[-10:]
+        ]
+    except Exception:
+        pass
 
-    if intent == "other":
-        return add_message(
-            conversation_id,
-            "assistant",
-            (
-                "I can help with: (1) next experiment recommendation, (2) literature support, or (3) campaign status. "
-                "Tell me which one you want."
-            ),
-            metadata={"intent": intent, "route": "clarify", "intent_classifier": intent_info},
-        )
+    # For smalltalk, status, and other intents, use general-purpose LLM responder
+    if intent in ("smalltalk", "status", "other"):
+        # Get recent recommendation context if available
+        recommendation_context = None
+        try:
+            for m in reversed(prior):
+                mm = m.get("metadata") or {}
+                rec_meta = mm.get("recommendation") or {}
+                if rec_meta:
+                    recommendation_context = rec_meta
+                    break
+        except Exception:
+            pass
+        
+        # Use general-purpose responder
+        if use_llm:
+            try:
+                general_resp = llm_general_response(
+                    user_question=user_text,
+                    conversation_history=conversation_history,
+                    recommendation_context=recommendation_context,
+                )
+                response_text = general_resp.get("response", "")
+                if not response_text:
+                    raise ValueError("Empty response from general responder")
+                
+                return add_message(
+                    conversation_id,
+                    "assistant",
+                    response_text,
+                    metadata={
+                        "intent": intent,
+                        "route": "general_llm",
+                        "intent_classifier": intent_info,
+                        "sources": general_resp.get("sources", []),
+                        "needs_recommendation": general_resp.get("needs_recommendation", False),
+                        "needs_literature": general_resp.get("needs_literature", False),
+                    },
+                )
+            except Exception as e:
+                # Fallback to simple responses if LLM fails
+                pass
+        
+        # Fallback responses if LLM not available or failed
+        if intent == "smalltalk":
+            return add_message(
+                conversation_id,
+                "assistant",
+                (
+                    "Hi! I can recommend the next best experiment, explain why, and show supporting literature. "
+                    "Try: 'Recommend a simple starter experiment and one follow-up based on expected outcome.'"
+                ),
+                metadata={"intent": intent, "route": "smalltalk", "intent_classifier": intent_info},
+            )
+        elif intent == "status":
+            assistant_count = sum(1 for m in prior if m.get("role") == "assistant")
+            user_count = sum(1 for m in prior if m.get("role") == "user")
+            last_assistant = next((m for m in reversed(prior) if m.get("role") == "assistant"), None)
+            snippet = (last_assistant or {}).get("content", "") if last_assistant else ""
+            return add_message(
+                conversation_id,
+                "assistant",
+                (
+                    f"Thread status: {user_count} user messages, {assistant_count} assistant messages. "
+                    f"Latest assistant update: {snippet[:220] if snippet else 'No previous messages'}"
+                ),
+                metadata={"intent": intent, "route": "status", "intent_classifier": intent_info},
+            )
+        else:  # other
+            return add_message(
+                conversation_id,
+                "assistant",
+                (
+                    "I can help with: (1) next experiment recommendation, (2) literature support, or (3) campaign status. "
+                    "Tell me which one you want, or ask me anything about your experiments!"
+                ),
+                metadata={"intent": intent, "route": "clarify", "intent_classifier": intent_info},
+            )
 
     if intent == "literature":
+        # Get literature search results
         lit = explain_literature_relevance(
             query=user_text,
             data_path=data_path,
@@ -447,17 +505,55 @@ def run_agent_turn(
             include_answer="basic",
             focus_journals=["JACS", "Chemical Science"],
         )
-        relevance = lit.get("relevance", {}) or {}
-        level = str(relevance.get("level", "medium"))
-        why_related = (relevance.get("why_related", []) or [])[:2]
-        followups = (lit.get("actionable_followups", []) or [])[:2]
-        assistant_text = (
-            f"Literature review summary: {lit.get('paper_summary') or 'No concise summary available.'} "
-            f"Relevance to your work: {level}. "
-            f"Why: {'; '.join(str(x) for x in why_related) if why_related else 'Evidence partially matches your query context.'} "
-            f"Suggested next checks: {'; '.join(str(x) for x in followups) if followups else 'Run one confirmatory experiment before broad changes.'}"
-        ).strip()
         evidence = lit.get("evidence", {}) or {}
+        relevance = lit.get("relevance", {}) or {}
+        
+        # Get recent recommendation context if available
+        recommendation_context = None
+        try:
+            for m in reversed(prior):
+                mm = m.get("metadata") or {}
+                rec_meta = mm.get("recommendation") or {}
+                if rec_meta:
+                    recommendation_context = rec_meta
+                    break
+        except Exception:
+            pass
+        
+        # Use general-purpose LLM responder for natural, context-aware answers
+        assistant_text = None
+        if use_llm:
+            try:
+                literature_context = {
+                    "paper_summary": lit.get("paper_summary"),
+                    "evidence": evidence,
+                    "relevance": relevance,
+                    "query": user_text,
+                }
+                
+                general_resp = llm_general_response(
+                    user_question=user_text,
+                    conversation_history=conversation_history,
+                    recommendation_context=recommendation_context,
+                    literature_context=literature_context,
+                )
+                assistant_text = general_resp.get("response", "")
+            except Exception as e:
+                # Fallback to structured format if general responder fails
+                pass
+        
+        # Fallback to structured format if LLM not enabled or failed
+        if not assistant_text:
+            level = str(relevance.get("level", "medium"))
+            why_related = (relevance.get("why_related", []) or [])[:2]
+            followups = (lit.get("actionable_followups", []) or [])[:2]
+            assistant_text = (
+                f"Literature review summary: {lit.get('paper_summary') or 'No concise summary available.'} "
+                f"Relevance to your work: {level}. "
+                f"Why: {'; '.join(str(x) for x in why_related) if why_related else 'Evidence partially matches your query context.'} "
+                f"Suggested next checks: {'; '.join(str(x) for x in followups) if followups else 'Run one confirmatory experiment before broad changes.'}"
+            ).strip()
+        
         return add_message(
             conversation_id,
             "assistant",
@@ -472,17 +568,18 @@ def run_agent_turn(
                     {"step": 3, "tool": "literature.tavily_search", "status": evidence.get("status", "unknown")},
                 ],
                 "literature_explain": lit,
-                "recommendation": lit.get("recommendation_context", {}) or {},
+                "recommendation": lit.get("recommendation_context", {}) or recommendation_context or {},
                 "reasoning": {
                     "why_now": None,
                     "caution_note": "; ".join((relevance.get("gaps", []) or [])[:2]),
-                    "decision_rule_after_result": "; ".join(followups),
-                    "confidence": level,
+                    "decision_rule_after_result": "; ".join((lit.get("actionable_followups", []) or [])[:2]),
+                    "confidence": str(relevance.get("level", "medium")),
                 },
                 "evidence": evidence,
                 "tavily_mode": "explicit_literature",
                 "llm_error": None,
                 "artifacts": {},
+                "general_responder_used": use_llm and assistant_text and not assistant_text.startswith("Literature review summary:"),
             },
         )
 
@@ -516,6 +613,8 @@ def run_agent_turn(
             include_answer="basic",
             focus_journals=["JACS", "Chemical Science"],
             exclude_indices=exclude_indices,
+            conversation_id=conversation_id,
+            user_question=user_text,
         )
         tavily_mode = "explicit"
     else:
@@ -525,6 +624,8 @@ def run_agent_turn(
             top_k=top_k,
             use_llm=use_llm,
             exclude_indices=exclude_indices,
+            conversation_id=conversation_id,
+            user_question=user_text,
         )
         rec = payload.get("recommendation", {}) or {}
         uncertainty = rec.get("predicted_uncertainty")
@@ -547,8 +648,40 @@ def run_agent_turn(
     reasoning = payload.get("reasoning", {}) or {}
     evidence = payload.get("evidence", {}) or {}
 
-    # Build clean, structured assistant text
-    assistant_text = _format_assistant(recommendation, reasoning, evidence if evidence else None)
+    # Use general-purpose LLM responder for context-aware answers (if LLM enabled)
+    # This ensures all questions get full conversation context, including recommendations
+    assistant_text = None
+    general_resp_meta = {}
+    if use_llm:
+        try:
+            # Get literature context if available
+            literature_context = None
+            if evidence and evidence.get("status") == "ok":
+                literature_context = {
+                    "paper_summary": evidence.get("answer"),
+                    "evidence": evidence,
+                }
+            
+            # Use general responder with full context - this gives context-aware answers
+            general_resp = llm_general_response(
+                user_question=user_text,
+                conversation_history=conversation_history,
+                recommendation_context=recommendation,
+                literature_context=literature_context,
+            )
+            assistant_text = general_resp.get("response", "")
+            general_resp_meta = {
+                "general_responder_used": True,
+                "sources": general_resp.get("sources", []),
+            }
+        except Exception as e:
+            # Fallback to structured format if general responder fails
+            general_resp_meta = {"general_responder_error": str(e)}
+    
+    # Fallback to structured format if LLM not enabled or failed
+    if not assistant_text:
+        assistant_text = _format_assistant(recommendation, reasoning, evidence if evidence else None)
+        general_resp_meta["general_responder_used"] = False
 
     agent_trace = [
         {"step": 1, "tool": "intent_classifier", "status": "success"},
@@ -567,23 +700,26 @@ def run_agent_turn(
             }
         )
 
+    metadata = {
+        "intent": intent,
+        "intent_classifier": intent_info,
+        "route": "recommendation_pipeline",
+        "agent_trace": agent_trace,
+        "recommendation": recommendation,
+        "reasoning": reasoning,
+        "evidence": evidence,
+        "tavily_mode": tavily_mode,
+        "tavily_auto_uncertainty_threshold": auto_threshold,
+        "llm_error": payload.get("llm_error"),
+        "artifacts": payload.get("artifacts", {}),
+    }
+    metadata.update(general_resp_meta)
+    
     return add_message(
         conversation_id,
         "assistant",
         assistant_text,
-        metadata={
-            "intent": intent,
-            "intent_classifier": intent_info,
-            "route": "recommendation_pipeline",
-            "agent_trace": agent_trace,
-            "recommendation": recommendation,
-            "reasoning": reasoning,
-            "evidence": evidence,
-            "tavily_mode": tavily_mode,
-            "tavily_auto_uncertainty_threshold": auto_threshold,
-            "llm_error": payload.get("llm_error"),
-            "artifacts": payload.get("artifacts", {}),
-        },
+        metadata=metadata,
     )
 
 
@@ -593,14 +729,31 @@ def run_recommendation_with_reasoning(
     top_k: int = 5,
     use_llm: bool = False,
     exclude_indices: Optional[set] = None,
+    conversation_id: Optional[str] = None,
+    user_question: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fast in-process recommendation + reasoning (no subprocess)."""
+    # Load conversation history if conversation_id is provided
+    conversation_history = None
+    if conversation_id:
+        try:
+            prior = list_messages(conversation_id)
+            # Format as simple list of role/content dicts for LLM context
+            conversation_history = [
+                {"role": m.get("role", ""), "content": str(m.get("content", ""))}
+                for m in prior[-10:]  # Last 10 messages for context
+            ]
+        except Exception:
+            pass  # If history load fails, continue without context
+    
     result = _fast_recommend(
         data_path=data_path,
         model_path=model_path,
         top_k=top_k,
         use_llm=use_llm,
         exclude_indices=exclude_indices,
+        conversation_history=conversation_history,
+        user_question=user_question,
     )
     return {
         "recommendation": _normalize_recommendation_payload(result.get("recommendation", {})),
@@ -720,6 +873,8 @@ def run_recommendation_with_evidence(
     include_answer: str = "basic",
     focus_journals: Optional[List[str]] = None,
     exclude_indices: Optional[set] = None,
+    conversation_id: Optional[str] = None,
+    user_question: Optional[str] = None,
 ) -> Dict[str, Any]:
     rec = run_recommendation_with_reasoning(
         data_path=data_path,
@@ -727,6 +882,8 @@ def run_recommendation_with_evidence(
         top_k=top_k,
         use_llm=use_llm,
         exclude_indices=exclude_indices,
+        conversation_id=conversation_id,
+        user_question=user_question,
     )
     recommendation_payload = rec.get("recommendation", {})
     query = evidence_query or _build_literature_query_from_recommendation(recommendation_payload)
@@ -848,7 +1005,7 @@ def create_training_run(
     meta_path = PROJECT_ROOT / "artifacts" / f"{output_name}_{run_id}_meta.json"
     cmd = [
         PYTHON_BIN,
-        "train_surrogate.py",
+        str(TRAIN_SURROGATE_SCRIPT),
         "--data",
         dataset_path,
         "--target",
@@ -924,7 +1081,7 @@ def create_experiment_run(
     out_path = PROJECT_ROOT / "artifacts" / f"experiment_run_{run_id}.json"
     cmd = [
         PYTHON_BIN,
-        "simulate_optimization.py",
+        str(SIMULATE_OPT_SCRIPT),
         "--data",
         dataset_path,
         "--model",
@@ -1123,7 +1280,7 @@ def _build_adapted_model_for_session(session_id: str, sess: Dict[str, Any]) -> O
 
     cmd = [
         PYTHON_BIN,
-        "train_surrogate.py",
+        str(TRAIN_SURROGATE_SCRIPT),
         "--data",
         str(combined_path),
         "--target",
@@ -1579,3 +1736,145 @@ def get_latest_comparison_suite() -> Optional[Dict[str, Any]]:
         return None
     return json.loads(path.read_text(encoding="utf-8"))
 
+
+# ---------------------------------------------------------------------------
+# Optimize page: submit + recommend in one call
+# ---------------------------------------------------------------------------
+
+def optimize_step(
+    session_id: str,
+    observed_yield: float,
+    conditions: Dict[str, Any],
+    notes: str = "",
+    top_k: int = 5,
+    use_tavily: bool = False,
+) -> Dict[str, Any]:
+    """Record an observation and immediately return next-best recommendations."""
+    sess = get_session(session_id)
+    if not sess:
+        raise ValueError("Session not found.")
+    if sess["status"] != "active":
+        raise ValueError("Session is not active.")
+    if int(sess["steps_completed"]) >= int(sess["budget"]):
+        raise ValueError("Budget exhausted.")
+
+    # 1) Record the result
+    current_step = int(sess["steps_completed"]) + 1
+    rid = str(uuid.uuid4())
+    ts = now_iso()
+    stored_meta = {"conditions": conditions} if conditions else {}
+    exec_sql(
+        """
+        INSERT INTO session_results(id, session_id, step_index, recommendation_json, observed_yield, notes, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (rid, session_id, current_step, dumps_json(sess.get("last_recommendation", {})), float(observed_yield), notes, dumps_json(stored_meta), ts),
+    )
+    prev_best = sess.get("best_observed_yield")
+    new_best = float(observed_yield) if prev_best is None else max(float(prev_best), float(observed_yield))
+    new_status = "completed" if current_step >= int(sess["budget"]) else "active"
+    exec_sql(
+        "UPDATE sessions SET best_observed_yield=?, steps_completed=?, status=?, updated_at=? WHERE id=?",
+        (new_best, current_step, new_status, now_iso(), session_id),
+    )
+
+    # 2) Build exclusion set from session history
+    results = _list_session_results(session_id)
+    exclude: set = set()
+    for r in results:
+        rec = r.get("recommendation", {}) or {}
+        ri = rec.get("row_index")
+        if ri is not None:
+            exclude.add(int(ri))
+        for cand in rec.get("ranked_candidates", []) or []:
+            cri = cand.get("row_index")
+            if cri is not None:
+                exclude.add(int(cri))
+
+    # 3) Get next recommendation (fast, in-process)
+    updated_sess = get_session(session_id)
+    if not updated_sess or updated_sess["status"] != "active":
+        return {
+            "session_id": session_id,
+            "step": current_step,
+            "best_observed_yield": new_best,
+            "status": new_status,
+            "recommendation": None,
+            "reasoning": None,
+            "evidence": None,
+            "history": results,
+        }
+
+    payload = run_recommendation_with_reasoning(
+        data_path=updated_sess["dataset_path"],
+        model_path=updated_sess["model_path"],
+        top_k=top_k,
+        use_llm=False,
+        exclude_indices=exclude,
+    )
+
+    evidence = {}
+    if use_tavily:
+        rec = payload.get("recommendation", {})
+        query = _build_literature_query_from_recommendation(rec)
+        evidence = _normalize_evidence_payload(search_literature_evidence(
+            query=query, max_results=3, search_depth="advanced", include_answer="basic",
+            focus_journals=["JACS", "Chemical Science"],
+        ))
+
+    # Update session last recommendation
+    exec_sql(
+        "UPDATE sessions SET last_recommendation_json=?, last_reasoning_json=?, last_evidence_json=?, updated_at=? WHERE id=?",
+        (
+            dumps_json(payload.get("recommendation", {})),
+            dumps_json(payload.get("reasoning", {})),
+            dumps_json(evidence),
+            now_iso(),
+            session_id,
+        ),
+    )
+
+    return {
+        "session_id": session_id,
+        "step": current_step,
+        "best_observed_yield": new_best,
+        "status": new_status,
+        "recommendation": payload.get("recommendation"),
+        "reasoning": payload.get("reasoning"),
+        "evidence": evidence if evidence else None,
+        "history": _list_session_results(session_id),
+    }
+
+
+def get_optimize_state(session_id: str) -> Optional[Dict[str, Any]]:
+    """Full optimization state for the /optimize page."""
+    sess = get_session(session_id)
+    if not sess:
+        return None
+    results = _list_session_results(session_id)
+
+    # Get feature columns from model
+    feature_columns: List[str] = []
+    unique_values: Dict[str, List] = {}
+    try:
+        bundle = joblib.load(sess["model_path"])
+        feature_columns = bundle.get("feature_columns", [])
+        df = load_table(sess["dataset_path"])
+        for col in feature_columns:
+            if col in df.columns:
+                vals = df[col].dropna().unique().tolist()
+                if len(vals) <= 50:  # Only send dropdown values for categorical-like columns
+                    unique_values[col] = sorted([str(v) for v in vals])
+    except Exception:
+        pass
+
+    return {
+        "session": sess,
+        "history": results,
+        "remaining_budget": max(int(sess["budget"]) - int(sess["steps_completed"]), 0),
+        "feature_columns": feature_columns,
+        "unique_values": unique_values,
+        "last_recommendation": sess.get("last_recommendation", {}),
+        "last_reasoning": sess.get("last_reasoning", {}),
+        "last_evidence": sess.get("last_evidence", {}),
+    }
