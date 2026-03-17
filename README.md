@@ -7,6 +7,8 @@ It helps scientists decide the **next best experiment** by combining:
 - adaptive decision policies (random/greedy/UCB/contextual LinUCB),
 - literature evidence and explanation layers for trust and interpretability.
 
+[![Watch the LabPilot demo](https://img.youtube.com/vi/7IyL28gGeqM/0.jpg)](https://www.youtube.com/watch?v=7IyL28gGeqM "LabPilot demo video")
+
 ## Why this project exists
 
 Lab optimization is expensive and slow when done by trial-and-error. Teams need to:
